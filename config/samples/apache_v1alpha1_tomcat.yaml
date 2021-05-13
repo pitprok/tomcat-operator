@@ -4,4 +4,7 @@ metadata:
   name: tomcat-sample
 spec:
   # Add fields here
-  foo: bar
+  applicationName: tomcat
+  replicas: 2
+  tomcatImage:
+    applicationImage: tomcat:latest
