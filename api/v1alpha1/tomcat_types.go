@@ -52,9 +52,17 @@ type TomcatSpec struct {
 type TomcatImageSpec struct {
 	// The name of the application image to be deployed
 	ApplicationImage string `json:"applicationImage"`
-	// Pod health checks information
-	TomcatHealthCheck *TomcatHealthCheckSpec `json:"TomcatHealthCheck,omitempty"`
 
+	// The source code for a webapp to be built and deployed
+	TomcatWebApp *TomcatWebAppSpec `json:"tomcatWebApp,omitempty"`
+
+	// Pod health checks information
+	TomcatHealthCheck *TomcatHealthCheckSpec `json:"tomcatHealthCheck,omitempty"`
+}
+
+type TomcatWebAppSpec struct {
+	WebArchiveImage string `json:"webArchiveImage,omitempty"`
+	WebAppURL       string `json:"webAppURL,omitempty"`
 }
 
 type TomcatHealthCheckSpec struct {

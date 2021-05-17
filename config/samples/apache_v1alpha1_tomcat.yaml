@@ -8,3 +8,6 @@ spec:
   replicas: 2
   tomcatImage:
     applicationImage: tomcat:latest
+    tomcatWebApp:
+      webArchiveImage: jfclere/tomcat-maven
+      webAppURL: https://github.com/jfclere/demo-webapp

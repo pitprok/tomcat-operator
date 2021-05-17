@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	kbappsv1 "k8s.io/api/apps/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -68,7 +68,9 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	reqLogger := r.Log.WithValues("tomcat", request.NamespacedName)
 	reqLogger.Info("Starting reconciliation")
 	updateDeployment := false
-	foundReplicas := int32(-1) // we need the foundDeployment.Spec.Replicas which is &appsv1.DeploymentConfig{} or &kbappsv1.Deployment{}
+	foundReplicas := int32(-1)
+
+	// Fetch the Tomcat instance
 	tomcat := &apachev1alpha1.Tomcat{}
 	err := r.Client.Get(context.TODO(), request.NamespacedName, tomcat)
 	if err != nil {
@@ -85,7 +87,7 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	}
 
 	// Check if the Deployment already exists, if not create a new one
-	foundDeployment := &kbappsv1.Deployment{}
+	foundDeployment := &appsv1.Deployment{}
 	err = r.Client.Get(context.TODO(), types.NamespacedName{Name: tomcat.Spec.ApplicationName, Namespace: tomcat.Namespace}, foundDeployment)
 	if err != nil && errors.IsNotFound(err) {
 		// Define a new Deployment
@@ -134,42 +136,44 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 		// Spec updated - return and requeue
 		return ctrl.Result{Requeue: true}, nil
 	}
-
+	reqLogger.Info("Reconciliation complete")
 	return ctrl.Result{}, nil
 }
 
-func (r *TomcatReconciler) deploymentForTomcat(t *apachev1alpha1.Tomcat) *kbappsv1.Deployment {
+func (r *TomcatReconciler) deploymentForTomcat(t *apachev1alpha1.Tomcat) *appsv1.Deployment {
 
 	replicas := int32(1)
-	podTemplateSpec := podTemplateSpecForTomcat(t, t.Spec.TomcatImage.ApplicationImage)
-	deployment := &kbappsv1.Deployment{
+
+	deployment := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "k8s.io/api/apps/v1",
 			Kind:       "Deployment",
 		},
 		ObjectMeta: objectMetaForTomcat(t, t.Spec.ApplicationName),
-		Spec: kbappsv1.DeploymentSpec{
-			Strategy: kbappsv1.DeploymentStrategy{
-				Type: kbappsv1.RecreateDeploymentStrategyType,
+		Spec: appsv1.DeploymentSpec{
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RecreateDeploymentStrategyType,
 			},
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"deploymentConfig": t.Spec.ApplicationName,
-					"Tomcat":           t.Name,
+					"Deployment":  t.Spec.ApplicationName,
+					"Tomcat":      t.Name,
+					"application": t.Spec.ApplicationName,
 				},
 			},
-			Template: podTemplateSpec,
+			Template: podTemplateSpecForTomcat(t, t.Spec.TomcatImage.ApplicationImage),
 		},
 	}
 
+	// Set Tomcat instance as the owner and controller
 	controllerutil.SetControllerReference(t, deployment, r.Scheme)
 	return deployment
 }
 
 func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.PodTemplateSpec {
 	objectMeta := objectMetaForTomcat(t, t.Spec.ApplicationName)
-	objectMeta.Labels["deploymentConfig"] = t.Spec.ApplicationName
+	objectMeta.Labels["Deployment"] = t.Spec.ApplicationName
 	objectMeta.Labels["Tomcat"] = t.Name
 	// TODO comment in when a webapp is added
 	// 	health := t.Spec.TomcatImage.TomcatHealthCheck
@@ -178,10 +182,37 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 		ObjectMeta: objectMeta,
 		Spec: corev1.PodSpec{
 			TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
+			Volumes: []corev1.Volume{{
+				Name: "app-volume",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			}},
+			InitContainers: []corev1.Container{{
+				Name:  "war",
+				Image: t.Spec.TomcatImage.TomcatWebApp.WebArchiveImage,
+				Command: []string{
+					"./mavenbuilder.sh",
+					t.Spec.TomcatImage.TomcatWebApp.WebAppURL,
+					"/mnt/ROOT.war",
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "app-volume",
+						MountPath: "/mnt",
+					},
+				},
+			}},
 			Containers: []corev1.Container{{
 				Name:            t.Spec.ApplicationName,
 				Image:           image,
 				ImagePullPolicy: "Always",
+				Env: []corev1.EnvVar{
+					{
+						Name:  "KUBERNETES_NAMESPACE",
+						Value: t.Namespace,
+					},
+				},
 				//TODO comment in when a webapp is added
 				// ReadinessProbe:  createReadinessProbe(t, health),
 				// LivenessProbe:   createLivenessProbe(t, health),
@@ -190,12 +221,13 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 					ContainerPort: 8080,
 					Protocol:      corev1.ProtocolTCP,
 				},
-				// TODO check
-				//{
-				// Name:          "jolokia",
-				// ContainerPort: 8778,
-				// Protocol:      corev1.ProtocolTCP,
-				// },
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "app-volume",
+						MountPath: "/usr/local/tomcat/webapps/ROOT.war",
+						SubPath:   "ROOT.war",
+					},
 				},
 			}},
 		},

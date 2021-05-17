@@ -48,7 +48,10 @@ spec:
               tomcatImage:
                 description: (Deployment method 1) Application image
                 properties:
-                  TomcatHealthCheck:
+                  applicationImage:
+                    description: The name of the application image to be deployed
+                    type: string
+                  tomcatHealthCheck:
                     description: Pod health checks information
                     properties:
                       serverLivenessScript:
@@ -60,9 +63,14 @@ spec:
                     required:
                     - serverReadinessScript
                     type: object
-                  applicationImage:
-                    description: The name of the application image to be deployed
-                    type: string
+                  tomcatWebApp:
+                    description: The source code for a webapp to be built and deployed
+                    properties:
+                      webAppURL:
+                        type: string
+                      webArchiveImage:
+                        type: string
+                    type: object
                 required:
                 - applicationImage
                 type: object
