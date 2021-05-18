@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -54,6 +55,7 @@ func (r *TomcatReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -83,6 +85,24 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 		}
 		// Error reading the object - requeue the request.
 		reqLogger.Error(err, "Failed to get Tomcat resource")
+		return ctrl.Result{}, err
+	}
+
+	// Check if the Service already exists, if not create a new one
+	ser := r.serviceForTomcat(tomcat)
+	err = r.Client.Get(context.TODO(), types.NamespacedName{Name: ser.Name, Namespace: ser.Namespace}, &corev1.Service{})
+	if err != nil && errors.IsNotFound(err) {
+		// Define a new Service
+		reqLogger.Info("Creating a new Service.", "Service.Namespace", ser.Namespace, "Service.Name", ser.Name)
+		err = r.Client.Create(context.TODO(), ser)
+		if err != nil {
+			reqLogger.Error(err, "Failed to create new Service.", "Service.Namespace", ser.Namespace, "Service.Name", ser.Name)
+			return ctrl.Result{}, err
+		}
+		// Service created successfully - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		reqLogger.Error(err, "Failed to get Service.")
 		return ctrl.Result{}, err
 	}
 
@@ -138,6 +158,34 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	}
 	reqLogger.Info("Reconciliation complete")
 	return ctrl.Result{}, nil
+}
+
+func (r *TomcatReconciler) serviceForTomcat(t *apachev1alpha1.Tomcat) *corev1.Service {
+
+	service := &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "Service",
+		},
+		ObjectMeta: objectMetaForTomcat(t, t.Spec.ApplicationName),
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{
+				Name:       "http",
+				Port:       8080,
+				TargetPort: intstr.FromInt(8080),
+			}},
+			Selector: map[string]string{
+				"Deployment":  t.Spec.ApplicationName,
+				"Tomcat":      t.Name,
+				"application": t.Spec.ApplicationName,
+			},
+		},
+	}
+
+	// Set Tomcat instance as the owner and controller
+	controllerutil.SetControllerReference(t, service, r.Scheme)
+
+	return service
 }
 
 func (r *TomcatReconciler) deploymentForTomcat(t *apachev1alpha1.Tomcat) *appsv1.Deployment {
