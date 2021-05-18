@@ -18,9 +18,11 @@ package controllers
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -54,8 +56,9 @@ func (r *TomcatReconciler) SetupWithManager(mgr ctrl.Manager) error {
 //+kubebuilder:rbac:groups=apache.org,resources=tomcats/finalizers,verbs=update
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -106,16 +109,69 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	// Check if a webapp needs to be built
+	if tomcat.Spec.TomcatImage.TomcatWebApp != nil {
+		if tomcat.Spec.TomcatImage.TomcatWebApp.WebAppURL != "" && tomcat.Spec.TomcatImage.TomcatWebApp.WebArchiveImage != "" {
+
+			// Check if a Persistent Volume Claim already exists, if not create a new one
+			pvc := r.persistentVolumeClaimForTomcat(tomcat)
+			err = r.Client.Get(context.TODO(), types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}, pvc)
+			if err != nil && errors.IsNotFound(err) {
+				reqLogger.Info("Creating a new PersistentVolumeClaim.", "PersistentVolumeClaim.Namespace", pvc.Namespace, "PersistentVolumeClaim.Name", pvc.Name)
+				err = r.Client.Create(context.TODO(), pvc)
+				if err != nil && !errors.IsAlreadyExists(err) {
+					reqLogger.Error(err, "Failed to create a new PersistentVolumeClaim.", "PersistentVolumeClaim.Namespace", pvc.Namespace, "PersistentVolumeClaim.Name", pvc.Name)
+					return ctrl.Result{}, err
+				}
+				// Persistent Volume Claim created successfully - return and requeue
+				return ctrl.Result{Requeue: true}, nil
+			} else if err != nil {
+				reqLogger.Error(err, "Failed to get PersistentVolumeClaim.")
+				return ctrl.Result{}, err
+			}
+
+			// Check if the build pod already exists, if not create a new one
+			buildPod := r.buildPodForTomcat(tomcat)
+			err = r.Client.Get(context.TODO(), types.NamespacedName{Name: buildPod.Name, Namespace: buildPod.Namespace}, buildPod)
+			if err != nil && errors.IsNotFound(err) {
+				reqLogger.Info("Creating a new Build Pod.", "BuildPod.Namespace", buildPod.Namespace, "BuildPod.Name", buildPod.Name)
+				err = r.Client.Create(context.TODO(), buildPod)
+				if err != nil && !errors.IsAlreadyExists(err) {
+					reqLogger.Error(err, "Failed to create a new Build Pod.", "BuildPod.Namespace", buildPod.Namespace, "BuildPod.Name", buildPod.Name)
+					return ctrl.Result{}, err
+				}
+				// Build pod created successfully - return and requeue
+				return ctrl.Result{Requeue: true}, nil
+			} else if err != nil {
+				reqLogger.Error(err, "Failed to get the Build Pod.")
+				return ctrl.Result{}, err
+			}
+
+			if buildPod.Status.Phase != corev1.PodSucceeded {
+				switch buildPod.Status.Phase {
+				case corev1.PodFailed:
+					reqLogger.Info("Application build failed: " + buildPod.Status.Message)
+				case corev1.PodPending:
+					reqLogger.Info("Application build pending")
+				case corev1.PodRunning:
+					reqLogger.Info("Application is still being built")
+				default:
+					reqLogger.Info("Unknown build pod status")
+				}
+				return ctrl.Result{RequeueAfter: (5 * time.Second)}, nil
+			}
+
+		}
+	}
+
 	// Check if the Deployment already exists, if not create a new one
-	foundDeployment := &appsv1.Deployment{}
-	err = r.Client.Get(context.TODO(), types.NamespacedName{Name: tomcat.Spec.ApplicationName, Namespace: tomcat.Namespace}, foundDeployment)
+	foundDeployment := r.deploymentForTomcat(tomcat)
+	err = r.Client.Get(context.TODO(), types.NamespacedName{Name: foundDeployment.Name, Namespace: foundDeployment.Namespace}, foundDeployment)
 	if err != nil && errors.IsNotFound(err) {
-		// Define a new Deployment
-		dep := r.deploymentForTomcat(tomcat)
-		reqLogger.Info("Creating a new Deployment.", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
-		err = r.Client.Create(context.TODO(), dep)
+		reqLogger.Info("Creating a new Deployment.", "Deployment.Namespace", foundDeployment.Namespace, "Deployment.Name", foundDeployment.Name)
+		err = r.Client.Create(context.TODO(), foundDeployment)
 		if err != nil && !errors.IsAlreadyExists(err) {
-			reqLogger.Error(err, "Failed to create a new Deployment.", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+			reqLogger.Error(err, "Failed to create a new Deployment.", "Deployment.Namespace", foundDeployment.Namespace, "Deployment.Name", foundDeployment.Name)
 			return ctrl.Result{}, err
 		}
 		// Deployment created successfully - return and requeue
@@ -188,6 +244,65 @@ func (r *TomcatReconciler) serviceForTomcat(t *apachev1alpha1.Tomcat) *corev1.Se
 	return service
 }
 
+func (r *TomcatReconciler) persistentVolumeClaimForTomcat(t *apachev1alpha1.Tomcat) *corev1.PersistentVolumeClaim {
+	pvc := &corev1.PersistentVolumeClaim{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "k8s.io/api/apps/v1",
+			Kind:       "PersistentVolumeClaimVolumeSource",
+		},
+		ObjectMeta: objectMetaForTomcat(t, t.Spec.ApplicationName),
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				"ReadWriteMany",
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					"storage": resource.MustParse("1Gi"),
+				},
+			},
+		},
+	}
+	return pvc
+}
+
+func (r *TomcatReconciler) buildPodForTomcat(t *apachev1alpha1.Tomcat) *corev1.Pod {
+	name := t.Spec.ApplicationName + "build"
+	objectMeta := objectMetaForTomcat(t, name)
+	objectMeta.Labels["Tomcat"] = t.Name
+	terminationGracePeriodSeconds := int64(60)
+	pod := &corev1.Pod{
+		ObjectMeta: objectMeta,
+		Spec: corev1.PodSpec{
+			TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
+			RestartPolicy:                 "OnFailure",
+			Volumes: []corev1.Volume{{
+				Name: "app-volume",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: t.Spec.ApplicationName},
+				},
+			}},
+			Containers: []corev1.Container{{
+				Name:  "war",
+				Image: t.Spec.TomcatImage.TomcatWebApp.WebArchiveImage,
+				Command: []string{
+					"./mavenbuilder.sh",
+					t.Spec.TomcatImage.TomcatWebApp.WebAppURL,
+					"/mnt/ROOT.war",
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "app-volume",
+						MountPath: "/mnt",
+					},
+				},
+			}},
+		},
+	}
+	// Set Tomcat instance as the owner and controller
+	controllerutil.SetControllerReference(t, pod, r.Scheme)
+	return pod
+}
+
 func (r *TomcatReconciler) deploymentForTomcat(t *apachev1alpha1.Tomcat) *appsv1.Deployment {
 
 	replicas := int32(1)
@@ -233,21 +348,9 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 			Volumes: []corev1.Volume{{
 				Name: "app-volume",
 				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
-				},
-			}},
-			InitContainers: []corev1.Container{{
-				Name:  "war",
-				Image: t.Spec.TomcatImage.TomcatWebApp.WebArchiveImage,
-				Command: []string{
-					"./mavenbuilder.sh",
-					t.Spec.TomcatImage.TomcatWebApp.WebAppURL,
-					"/mnt/ROOT.war",
-				},
-				VolumeMounts: []corev1.VolumeMount{
-					{
-						Name:      "app-volume",
-						MountPath: "/mnt",
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: t.Spec.ApplicationName,
+						ReadOnly:  true,
 					},
 				},
 			}},
