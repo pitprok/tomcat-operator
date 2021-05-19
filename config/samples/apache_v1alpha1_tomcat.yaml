@@ -9,5 +9,5 @@ spec:
   tomcatImage:
     applicationImage: tomcat:latest
     tomcatWebApp:
-      webArchiveImage: jfclere/tomcat-maven
+      webArchiveImage: maven:3.8.1-openjdk-8
       webAppURL: https://github.com/jfclere/demo-webapp

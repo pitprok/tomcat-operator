@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -266,7 +267,7 @@ func (r *TomcatReconciler) persistentVolumeClaimForTomcat(t *apachev1alpha1.Tomc
 }
 
 func (r *TomcatReconciler) buildPodForTomcat(t *apachev1alpha1.Tomcat) *corev1.Pod {
-	name := t.Spec.ApplicationName + "build"
+	name := t.Spec.ApplicationName + "-build"
 	objectMeta := objectMetaForTomcat(t, name)
 	objectMeta.Labels["Tomcat"] = t.Name
 	terminationGracePeriodSeconds := int64(60)
@@ -285,9 +286,11 @@ func (r *TomcatReconciler) buildPodForTomcat(t *apachev1alpha1.Tomcat) *corev1.P
 				Name:  "war",
 				Image: t.Spec.TomcatImage.TomcatWebApp.WebArchiveImage,
 				Command: []string{
-					"./mavenbuilder.sh",
-					t.Spec.TomcatImage.TomcatWebApp.WebAppURL,
-					"/mnt/ROOT.war",
+					"/bin/sh",
+					"-c",
+				},
+				Args: []string{
+					generateWebAppBuildScript(t.Spec.TomcatImage.TomcatWebApp.WebAppURL, "/mnt/ROOT.war"),
 				},
 				VolumeMounts: []corev1.VolumeMount{
 					{
@@ -301,6 +304,39 @@ func (r *TomcatReconciler) buildPodForTomcat(t *apachev1alpha1.Tomcat) *corev1.P
 	// Set Tomcat instance as the owner and controller
 	controllerutil.SetControllerReference(t, pod, r.Scheme)
 	return pod
+}
+
+func generateWebAppBuildScript(webAppURL string, mountPath string) string {
+	return fmt.Sprintf(`
+	GITURL=%s
+	ROOTWAR=%s
+	if [ -z ${GITURL} ]; then
+		echo "Need an URL like https://github.com/jfclere/demo-webapp.git"
+		exit 1
+	fi
+	if [ -z ${ROOTWAR} ]; then
+		# The /mnt is mounted by the first InitContainers of the operator,
+		ROOTWAR=/mnt/ROOT.war
+	fi
+	git clone ${GITURL}
+	if [ $? -ne 0 ]; then
+		echo "Can't clone ${GITURL}"
+		exit 1
+	fi
+	DIR=$(echo ${GITURL##*/})
+	DIR=$(echo ${DIR%%.*})
+	cd ${DIR}
+	rm -r ~/.m2/repository
+	mvn clean install
+	if [ $? -ne 0 ]; then
+		echo "mvn install failed please check the pom.xml in ${GITURL}"
+		exit 1
+	fi
+	cp target/*.war $ROOTWAR
+	ls -l ${ROOTWAR}`,
+		webAppURL,
+		mountPath,
+	)
 }
 
 func (r *TomcatReconciler) deploymentForTomcat(t *apachev1alpha1.Tomcat) *appsv1.Deployment {
