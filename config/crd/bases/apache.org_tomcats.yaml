@@ -40,18 +40,13 @@ spec:
                 description: The base for the names of the deployed application resources
                 pattern: ^[a-z]([-a-z0-9]*[a-z0-9])?$
                 type: string
-              replicas:
-                description: The desired number of replicas for the application
-                format: int32
-                minimum: 0
-                type: integer
-              tomcatImage:
+              image:
                 description: (Deployment method 1) Application image
                 properties:
                   applicationImage:
                     description: The name of the application image to be deployed
                     type: string
-                  tomcatHealthCheck:
+                  healthCheck:
                     description: Pod health checks information
                     properties:
                       serverLivenessScript:
@@ -63,17 +58,22 @@ spec:
                     required:
                     - serverReadinessScript
                     type: object
-                  tomcatWebApp:
+                  webApp:
                     description: The source code for a webapp to be built and deployed
                     properties:
-                      webAppURL:
+                      builderImage:
                         type: string
-                      webArchiveImage:
+                      sourceRepositoryURL:
                         type: string
                     type: object
                 required:
                 - applicationImage
                 type: object
+              replicas:
+                description: The desired number of replicas for the application
+                format: int32
+                minimum: 0
+                type: integer
             required:
             - applicationName
             - replicas

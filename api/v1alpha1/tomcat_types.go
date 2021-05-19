@@ -45,27 +45,29 @@ type TomcatSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	Replicas int32 `json:"replicas"`
 	// (Deployment method 1) Application image
-	TomcatImage *TomcatImageSpec `json:"tomcatImage,omitempty"`
+	Image *ImageSpec `json:"image,omitempty"`
 }
 
-// (Deployment method 1) Application image
-type TomcatImageSpec struct {
+// ImageSpec contains the Tomcat application image information
+type ImageSpec struct {
 	// The name of the application image to be deployed
 	ApplicationImage string `json:"applicationImage"`
 
 	// The source code for a webapp to be built and deployed
-	TomcatWebApp *TomcatWebAppSpec `json:"tomcatWebApp,omitempty"`
+	WebApp *WebAppSpec `json:"webApp,omitempty"`
 
 	// Pod health checks information
-	TomcatHealthCheck *TomcatHealthCheckSpec `json:"tomcatHealthCheck,omitempty"`
+	HealthCheck *HealthCheckSpec `json:"healthCheck,omitempty"`
 }
 
-type TomcatWebAppSpec struct {
-	WebArchiveImage string `json:"webArchiveImage,omitempty"`
-	WebAppURL       string `json:"webAppURL,omitempty"`
+// WebAppSpec contains all the information required to build a web application before deploying the server
+type WebAppSpec struct {
+	BuilderImage        string `json:"builderImage,omitempty"`
+	SourceRepositoryURL string `json:"sourceRepositoryURL,omitempty"`
 }
 
-type TomcatHealthCheckSpec struct {
+// HealthCheckSpec has the liveness and readiness scripts for the server
+type HealthCheckSpec struct {
 	// String for the pod readiness health check logic
 	ServerReadinessScript string `json:"serverReadinessScript"`
 	// String for the pod liveness health check logic

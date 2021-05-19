@@ -111,8 +111,8 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	}
 
 	// Check if a webapp needs to be built
-	if tomcat.Spec.TomcatImage.TomcatWebApp != nil {
-		if tomcat.Spec.TomcatImage.TomcatWebApp.WebAppURL != "" && tomcat.Spec.TomcatImage.TomcatWebApp.WebArchiveImage != "" {
+	if tomcat.Spec.Image.WebApp != nil {
+		if tomcat.Spec.Image.WebApp.SourceRepositoryURL != "" && tomcat.Spec.Image.WebApp.BuilderImage != "" {
 
 			// Check if a Persistent Volume Claim already exists, if not create a new one
 			pvc := r.persistentVolumeClaimForTomcat(tomcat)
@@ -182,10 +182,10 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	tomcatImage := tomcat.Spec.TomcatImage
+	image := tomcat.Spec.Image
 	applicationImage := ""
-	if tomcatImage != nil {
-		applicationImage = tomcatImage.ApplicationImage
+	if image != nil {
+		applicationImage = image.ApplicationImage
 	}
 
 	foundImage := foundDeployment.Spec.Template.Spec.Containers[0].Image
@@ -284,13 +284,13 @@ func (r *TomcatReconciler) buildPodForTomcat(t *apachev1alpha1.Tomcat) *corev1.P
 			}},
 			Containers: []corev1.Container{{
 				Name:  "war",
-				Image: t.Spec.TomcatImage.TomcatWebApp.WebArchiveImage,
+				Image: t.Spec.Image.WebApp.BuilderImage,
 				Command: []string{
 					"/bin/sh",
 					"-c",
 				},
 				Args: []string{
-					generateWebAppBuildScript(t.Spec.TomcatImage.TomcatWebApp.WebAppURL, "/mnt/ROOT.war"),
+					generateWebAppBuildScript(t.Spec.Image.WebApp.SourceRepositoryURL, "/mnt/ROOT.war"),
 				},
 				VolumeMounts: []corev1.VolumeMount{
 					{
@@ -306,17 +306,17 @@ func (r *TomcatReconciler) buildPodForTomcat(t *apachev1alpha1.Tomcat) *corev1.P
 	return pod
 }
 
-func generateWebAppBuildScript(webAppURL string, mountPath string) string {
+func generateWebAppBuildScript(webAppSourceRepositoryURL string, webAppMountPath string) string {
 	return fmt.Sprintf(`
 	GITURL=%s
-	ROOTWAR=%s
+	WARPATH=%s
 	if [ -z ${GITURL} ]; then
 		echo "Need an URL like https://github.com/jfclere/demo-webapp.git"
 		exit 1
 	fi
-	if [ -z ${ROOTWAR} ]; then
+	if [ -z ${WARPATH} ]; then
 		# The /mnt is mounted by the first InitContainers of the operator,
-		ROOTWAR=/mnt/ROOT.war
+		WARPATH=/mnt/ROOT.war
 	fi
 	git clone ${GITURL}
 	if [ $? -ne 0 ]; then
@@ -326,16 +326,14 @@ func generateWebAppBuildScript(webAppURL string, mountPath string) string {
 	DIR=$(echo ${GITURL##*/})
 	DIR=$(echo ${DIR%%.*})
 	cd ${DIR}
-	rm -r ~/.m2/repository
 	mvn clean install
 	if [ $? -ne 0 ]; then
 		echo "mvn install failed please check the pom.xml in ${GITURL}"
 		exit 1
 	fi
-	cp target/*.war $ROOTWAR
-	ls -l ${ROOTWAR}`,
-		webAppURL,
-		mountPath,
+	cp target/*.war $WARPATH`,
+		webAppSourceRepositoryURL,
+		webAppMountPath,
 	)
 }
 
@@ -361,7 +359,7 @@ func (r *TomcatReconciler) deploymentForTomcat(t *apachev1alpha1.Tomcat) *appsv1
 					"application": t.Spec.ApplicationName,
 				},
 			},
-			Template: podTemplateSpecForTomcat(t, t.Spec.TomcatImage.ApplicationImage),
+			Template: podTemplateSpecForTomcat(t, t.Spec.Image.ApplicationImage),
 		},
 	}
 
@@ -375,7 +373,7 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 	objectMeta.Labels["Deployment"] = t.Spec.ApplicationName
 	objectMeta.Labels["Tomcat"] = t.Name
 	// TODO comment in when a webapp is added
-	// 	health := t.Spec.TomcatImage.TomcatHealthCheck
+	// 	health := t.Spec.Image.HealthCheck
 	terminationGracePeriodSeconds := int64(60)
 	return corev1.PodTemplateSpec{
 		ObjectMeta: objectMeta,

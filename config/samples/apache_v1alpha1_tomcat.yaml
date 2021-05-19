@@ -6,8 +6,8 @@ spec:
   # Add fields here
   applicationName: tomcat
   replicas: 2
-  tomcatImage:
+  image:
     applicationImage: tomcat:latest
-    tomcatWebApp:
-      webArchiveImage: maven:3.8.1-openjdk-8
-      webAppURL: https://github.com/jfclere/demo-webapp
+    webApp:
+      builderImage: maven:3.8.1-openjdk-8
+      sourceRepositoryURL: https://github.com/jfclere/demo-webapp
