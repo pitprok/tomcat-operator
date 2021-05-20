@@ -62,8 +62,20 @@ type ImageSpec struct {
 
 // WebAppSpec contains all the information required to build a web application before deploying the server
 type WebAppSpec struct {
-	BuilderImage        string `json:"builderImage,omitempty"`
-	SourceRepositoryURL string `json:"sourceRepositoryURL,omitempty"`
+	// Image of the container where the web application will be built
+	BuilderImage string `json:"builderImage"`
+	// Name of the web application (default: ROOT)
+	Name string `json:"name,omitempty"`
+	// URL for the repository of the application sources
+	SourceRepositoryURL string `json:"sourceRepositoryURL"`
+	// Branch in the source repository
+	SourceRepositoryRef string `json:"sourceRepositoryRef,omitempty"`
+	// Subdirectory in the source repository
+	SourceRepositoryContextDir string `json:"contextDir,omitempty"`
+	// The path on which the application war will be mounted (default:/usr/local/tomcat/webapps/)
+	DeployPath string `json:"deployPath,omitempty"`
+	// The size that the PersistentVolumeClaim needs to be in order to contain the application war
+	ApplicationSize string `json:"applicationSize,omitempty"`
 }
 
 // HealthCheckSpec has the liveness and readiness scripts for the server
