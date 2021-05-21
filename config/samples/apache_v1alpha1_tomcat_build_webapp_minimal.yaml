@@ -1,0 +1,13 @@
+apiVersion: apache.org/v1alpha1
+kind: Tomcat
+metadata:
+  name: tomcat-sample
+spec:
+  # Add fields here
+  applicationName: tomcat
+  replicas: 2
+  image:
+    applicationImage: tomcat:latest
+    webApp:
+      builderImage: maven:3.8.1-openjdk-8
+      sourceRepositoryURL: https://github.com/jfclere/demo-webapp

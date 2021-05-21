@@ -63,7 +63,11 @@ spec:
                     properties:
                       applicationSize:
                         description: The size that the PersistentVolumeClaim needs
-                          to be in order to contain the application war
+                          to be in order to contain the application war (default 1Gi)
+                        type: string
+                      buildScript:
+                        description: The script that the BuilderImage will use to
+                          build the application war and move it to /mnt
                         type: string
                       builderImage:
                         description: Image of the container where the web application

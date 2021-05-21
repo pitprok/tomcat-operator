@@ -52,6 +52,8 @@ func (r *TomcatReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+var reqLogger logr.Logger
+
 //+kubebuilder:rbac:groups=apache.org,resources=tomcats,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apache.org,resources=tomcats/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apache.org,resources=tomcats/finalizers,verbs=update
@@ -71,7 +73,7 @@ func (r *TomcatReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.7.2/pkg/reconcile
 func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
-	reqLogger := r.Log.WithValues("tomcat", request.NamespacedName)
+	reqLogger = r.Log.WithValues("tomcat", request.NamespacedName)
 	reqLogger.Info("Starting reconciliation")
 	updateDeployment := false
 	foundReplicas := int32(-1)
@@ -91,6 +93,8 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 		reqLogger.Error(err, "Failed to get Tomcat resource")
 		return ctrl.Result{}, err
 	}
+
+	tomcat = r.addDefaultValues(tomcat)
 
 	// Check if the Service already exists, if not create a new one
 	ser := r.serviceForTomcat(tomcat)
@@ -217,6 +221,32 @@ func (r *TomcatReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
+func (r *TomcatReconciler) addDefaultValues(t *apachev1alpha1.Tomcat) *apachev1alpha1.Tomcat {
+
+	if t.Spec.Image.WebApp != nil {
+		webApp := t.Spec.Image.WebApp
+		if webApp.Name == "" {
+			reqLogger.Info("t.Spec.Image.WebApp.Name is not set, setting value to 'ROOT'")
+			webApp.Name = "ROOT"
+		}
+		if webApp.DeployPath == "" {
+			reqLogger.Info("t.Spec.Image.WebApp.DeployPath is not set, setting value to '/usr/local/tomcat/webapps/'")
+			webApp.DeployPath = "/usr/local/tomcat/webapps/"
+		}
+		if webApp.ApplicationSize == "" {
+			reqLogger.Info("t.Spec.Image.WebApp.ApplicationSize is not set, setting value to '1Gi'")
+			webApp.ApplicationSize = "1Gi"
+		}
+
+		if webApp.BuildScript == "" {
+			webApp.BuildScript = generateWebAppBuildScript(t)
+		}
+	}
+
+	return t
+
+}
+
 func (r *TomcatReconciler) serviceForTomcat(t *apachev1alpha1.Tomcat) *corev1.Service {
 
 	service := &corev1.Service{
@@ -226,11 +256,13 @@ func (r *TomcatReconciler) serviceForTomcat(t *apachev1alpha1.Tomcat) *corev1.Se
 		},
 		ObjectMeta: objectMetaForTomcat(t, t.Spec.ApplicationName),
 		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{{
-				Name:       "http",
-				Port:       8080,
-				TargetPort: intstr.FromInt(8080),
-			}},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Port:       8080,
+					TargetPort: intstr.FromInt(8080),
+				},
+			},
 			Selector: map[string]string{
 				"Deployment":  t.Spec.ApplicationName,
 				"Tomcat":      t.Name,
@@ -276,29 +308,33 @@ func (r *TomcatReconciler) buildPodForTomcat(t *apachev1alpha1.Tomcat) *corev1.P
 		Spec: corev1.PodSpec{
 			TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
 			RestartPolicy:                 "OnFailure",
-			Volumes: []corev1.Volume{{
-				Name: "app-volume",
-				VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: t.Spec.ApplicationName},
-				},
-			}},
-			Containers: []corev1.Container{{
-				Name:  "war",
-				Image: t.Spec.Image.WebApp.BuilderImage,
-				Command: []string{
-					"/bin/sh",
-					"-c",
-				},
-				Args: []string{
-					generateWebAppBuildScript(t),
-				},
-				VolumeMounts: []corev1.VolumeMount{
-					{
-						Name:      "app-volume",
-						MountPath: "/mnt",
+			Volumes: []corev1.Volume{
+				{
+					Name: "app-volume",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: t.Spec.ApplicationName},
 					},
 				},
-			}},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:  "war",
+					Image: t.Spec.Image.WebApp.BuilderImage,
+					Command: []string{
+						"/bin/sh",
+						"-c",
+					},
+					Args: []string{
+						generateWebAppBuildScript(t),
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "app-volume",
+							MountPath: "/mnt",
+						},
+					},
+				},
+			},
 		},
 	}
 	// Set Tomcat instance as the owner and controller
@@ -311,43 +347,41 @@ func generateWebAppBuildScript(t *apachev1alpha1.Tomcat) string {
 	webAppSourceRepositoryURL := t.Spec.Image.WebApp.SourceRepositoryURL
 	webAppSourceRepositoryRef := t.Spec.Image.WebApp.SourceRepositoryRef
 	webAppSourceRepositoryContextDir := t.Spec.Image.WebApp.SourceRepositoryContextDir
-	script := fmt.Sprintf(`
-	webAppWarFileName=%s
-	webAppSourceRepositoryURL=%s
-	webAppSourceRepositoryRef=%s
-	webAppSourceRepositoryContextDir=%s
 
-
-	if [ -z ${webAppSourceRepositoryURL} ]; then
-		echo "Need an URL like https://github.com/jfclere/demo-webapp.git"
-		exit 1
-	fi
-	git clone ${webAppSourceRepositoryURL}
-	if [ $? -ne 0 ]; then
-		echo "Can't clone ${webAppSourceRepositoryURL}"
-		exit 1
-	fi
-	DIR=$(echo ${webAppSourceRepositoryURL##*/})
-	DIR=$(echo ${DIR%%.*})
-	cd ${DIR}
-	if [ ! -z ${webAppSourceRepositoryRef} ]; then
-		git checkout ${webAppSourceRepositoryRef}
-	fi
-	if [ ! -z ${webAppSourceRepositoryContextDir} ]; then
-		cd ${webAppSourceRepositoryContextDir}
-	fi
-	mvn clean install
-	if [ $? -ne 0 ]; then
-		echo "mvn install failed please check the pom.xml in ${webAppSourceRepositoryURL}"
-		exit 1
-	fi
-	cp target/*.war /mnt/${webAppWarFileName}`,
+	return fmt.Sprintf(`
+		webAppWarFileName=%s;
+		webAppSourceRepositoryURL=%s;
+		webAppSourceRepositoryRef=%s;
+		webAppSourceRepositoryContextDir=%s;
+		if [ -z ${webAppSourceRepositoryURL} ]; then
+			echo "Need an URL like https://github.com/jfclere/demo-webapp.git";
+			exit 1;
+		fi;
+		git clone ${webAppSourceRepositoryURL};
+		if [ $? -ne 0 ]; then
+			echo "Can't clone ${webAppSourceRepositoryURL}";
+			exit 1;
+		fi;
+		DIR=$(echo ${webAppSourceRepositoryURL##*/});
+		DIR=$(echo ${DIR%%.*});
+		cd ${DIR};
+		if [ ! -z ${webAppSourceRepositoryRef} ]; then
+			git checkout ${webAppSourceRepositoryRef};
+		fi;
+		if [ ! -z ${webAppSourceRepositoryContextDir} ]; then
+			cd ${webAppSourceRepositoryContextDir};
+		fi;
+		mvn clean install;
+		if [ $? -ne 0 ]; then
+			echo "mvn install failed please check the pom.xml in ${webAppSourceRepositoryURL}";
+			exit 1;
+		fi
+		cp target/*.war /mnt/${webAppWarFileName};`,
 		webAppWarFileName,
 		webAppSourceRepositoryURL,
 		webAppSourceRepositoryRef,
 		webAppSourceRepositoryContextDir,
 	)
-	return script
 }
 
 func (r *TomcatReconciler) deploymentForTomcat(t *apachev1alpha1.Tomcat) *appsv1.Deployment {
@@ -385,7 +419,6 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 	objectMeta := objectMetaForTomcat(t, t.Spec.ApplicationName)
 	objectMeta.Labels["Deployment"] = t.Spec.ApplicationName
 	objectMeta.Labels["Tomcat"] = t.Name
-	webAppWarFileName := t.Spec.Image.WebApp.Name + ".war"
 	// TODO comment in when a webapp is added
 	// 	health := t.Spec.Image.HealthCheck
 	terminationGracePeriodSeconds := int64(60)
@@ -393,7 +426,39 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 		ObjectMeta: objectMeta,
 		Spec: corev1.PodSpec{
 			TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
-			Volumes: []corev1.Volume{{
+			Volumes:                       volumesForTomcat(t),
+			Containers: []corev1.Container{
+				{
+					Name:            t.Spec.ApplicationName,
+					Image:           image,
+					ImagePullPolicy: "Always",
+					Env: []corev1.EnvVar{
+						{
+							Name:  "KUBERNETES_NAMESPACE",
+							Value: t.Namespace,
+						},
+					},
+					//TODO comment in when a webapp is added
+					// ReadinessProbe:  createReadinessProbe(t, health),
+					// LivenessProbe:   createLivenessProbe(t, health),
+					Ports: []corev1.ContainerPort{
+						{
+							Name:          "http",
+							ContainerPort: 8080,
+							Protocol:      corev1.ProtocolTCP,
+						},
+					},
+					VolumeMounts: volumeMountsForTomcat(t),
+				},
+			},
+		},
+	}
+}
+
+func volumesForTomcat(t *apachev1alpha1.Tomcat) []corev1.Volume {
+	if t.Spec.Image.WebApp != nil {
+		return []corev1.Volume{
+			{
 				Name: "app-volume",
 				VolumeSource: corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
@@ -401,36 +466,25 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 						ReadOnly:  true,
 					},
 				},
-			}},
-			Containers: []corev1.Container{{
-				Name:            t.Spec.ApplicationName,
-				Image:           image,
-				ImagePullPolicy: "Always",
-				Env: []corev1.EnvVar{
-					{
-						Name:  "KUBERNETES_NAMESPACE",
-						Value: t.Namespace,
-					},
-				},
-				//TODO comment in when a webapp is added
-				// ReadinessProbe:  createReadinessProbe(t, health),
-				// LivenessProbe:   createLivenessProbe(t, health),
-				Ports: []corev1.ContainerPort{{
-					Name:          "http",
-					ContainerPort: 8080,
-					Protocol:      corev1.ProtocolTCP,
-				},
-				},
-				VolumeMounts: []corev1.VolumeMount{
-					{
-						Name:      "app-volume",
-						MountPath: t.Spec.Image.WebApp.DeployPath + webAppWarFileName,
-						SubPath:   webAppWarFileName,
-					},
-				},
-			}},
-		},
+			},
+		}
 	}
+	return []corev1.Volume{}
+}
+
+func volumeMountsForTomcat(t *apachev1alpha1.Tomcat) []corev1.VolumeMount {
+	if t.Spec.Image.WebApp != nil {
+		webAppWarFileName := t.Spec.Image.WebApp.Name + ".war"
+		return []corev1.VolumeMount{
+			{
+				Name:      "app-volume",
+				MountPath: t.Spec.Image.WebApp.DeployPath + webAppWarFileName,
+				SubPath:   webAppWarFileName,
+			},
+		}
+	}
+	return []corev1.VolumeMount{}
+
 }
 
 func objectMetaForTomcat(t *apachev1alpha1.Tomcat, name string) metav1.ObjectMeta {

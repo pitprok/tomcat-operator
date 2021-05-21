@@ -8,11 +8,3 @@ spec:
   replicas: 2
   image:
     applicationImage: tomcat:latest
-    webApp:
-      name: ROOT
-      builderImage: maven:3.8.1-openjdk-8
-      sourceRepositoryURL: https://github.com/jfclere/demo-webapp
-      sourceRepositoryRef: "master"
-      contextDir: .
-      deployPath: /usr/local/tomcat/webapps/
-      applicationSize: 1Gi
