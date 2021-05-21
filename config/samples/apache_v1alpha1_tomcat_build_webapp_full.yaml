@@ -8,15 +8,18 @@ spec:
   replicas: 2
   image:
     applicationImage: tomcat:latest
+    healthCheck:
+      serverReadinessScript: "curl localhost:8080/demo-1/demo"
+      serverLivenessScript: "curl localhost:8080/demo-1/demo"
     webApp:
       # name: ROOT
       name: demo-1
-      builderImage: maven:3.8.1-openjdk-8
       sourceRepositoryURL: https://github.com/jfclere/demo-webapp
       sourceRepositoryRef: "master"
       contextDir: .
       deployPath: /usr/local/tomcat/webapps/
       applicationSize: 1Gi
+      builderImage: maven:3.8.1-openjdk-8
       buildScript : 'webAppWarFileName="demo-1.war";
         webAppSourceRepositoryURL="https://github.com/jfclere/demo-webapp";
         webAppSourceRepositoryRef="master";

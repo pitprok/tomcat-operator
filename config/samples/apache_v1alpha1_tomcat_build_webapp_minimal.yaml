@@ -9,5 +9,5 @@ spec:
   image:
     applicationImage: tomcat:latest
     webApp:
-      builderImage: maven:3.8.1-openjdk-8
       sourceRepositoryURL: https://github.com/jfclere/demo-webapp
+      builderImage: maven:3.8.1-openjdk-8

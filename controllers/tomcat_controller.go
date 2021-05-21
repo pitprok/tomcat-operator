@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -419,8 +420,6 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 	objectMeta := objectMetaForTomcat(t, t.Spec.ApplicationName)
 	objectMeta.Labels["Deployment"] = t.Spec.ApplicationName
 	objectMeta.Labels["Tomcat"] = t.Name
-	// TODO comment in when a webapp is added
-	// 	health := t.Spec.Image.HealthCheck
 	terminationGracePeriodSeconds := int64(60)
 	return corev1.PodTemplateSpec{
 		ObjectMeta: objectMeta,
@@ -438,9 +437,8 @@ func podTemplateSpecForTomcat(t *apachev1alpha1.Tomcat, image string) corev1.Pod
 							Value: t.Namespace,
 						},
 					},
-					//TODO comment in when a webapp is added
-					// ReadinessProbe:  createReadinessProbe(t, health),
-					// LivenessProbe:   createLivenessProbe(t, health),
+					ReadinessProbe: createReadinessProbe(t),
+					LivenessProbe:  createLivenessProbe(t),
 					Ports: []corev1.ContainerPort{
 						{
 							Name:          "http",
@@ -493,6 +491,61 @@ func objectMetaForTomcat(t *apachev1alpha1.Tomcat, name string) metav1.ObjectMet
 		Namespace: t.Namespace,
 		Labels: map[string]string{
 			"application": t.Spec.ApplicationName,
+		},
+	}
+}
+
+// createLivenessProbe returns a custom probe if the serverLivenessScript string is defined and not empty in the Custom Resource.
+// Otherwise, it returns nil
+//
+// If defined, serverLivenessScript must be a shell script that
+// complies to the Kubernetes probes requirements and use the following format
+// shell -c "command"
+func createLivenessProbe(t *apachev1alpha1.Tomcat) *corev1.Probe {
+	health := t.Spec.Image.HealthCheck
+	livenessProbeScript := ""
+	if health != nil {
+		livenessProbeScript = health.ServerLivenessScript
+	}
+	if livenessProbeScript != "" {
+		return createCustomProbe(t, livenessProbeScript)
+	}
+	return nil
+}
+
+// createReadinessProbe returns a custom probe if the serverReadinessScript string is defined and not empty in the Custom Resource.
+// Otherwise, it returns nil.
+//
+// If defined, serverReadinessScript must be a shell script that
+// complies to the Kubernetes probes requirements and use the following format
+// shell -c "command"
+func createReadinessProbe(t *apachev1alpha1.Tomcat) *corev1.Probe {
+	health := t.Spec.Image.HealthCheck
+	readinessProbeScript := ""
+	if health != nil {
+		readinessProbeScript = health.ServerReadinessScript
+	}
+	if readinessProbeScript != "" {
+		return createCustomProbe(t, readinessProbeScript)
+	}
+	return nil
+}
+
+func createCustomProbe(t *apachev1alpha1.Tomcat, probeScript string) *corev1.Probe {
+	// If the script has the following format: shell -c "command"
+	// we create the slice ["shell", "-c", "command"]
+	probeScriptSlice := make([]string, 0)
+	pos := strings.Index(probeScript, "\"")
+	if pos != -1 {
+		probeScriptSlice = append(strings.Split(probeScript[0:pos], " "), probeScript[pos:])
+	} else {
+		probeScriptSlice = strings.Split(probeScript, " ")
+	}
+	return &corev1.Probe{
+		Handler: corev1.Handler{
+			Exec: &corev1.ExecAction{
+				Command: probeScriptSlice,
+			},
 		},
 	}
 }
